@@ -20,13 +20,12 @@ RUN pip3 install --upgrade pip setuptools wheel
 
 # Установка зависимостей для Flash Attention 2
 RUN if [ "$INSTALL_FLASH_ATTN" = "1" ]; then \
-        pip3 install ninja packaging; \
-        pip3 install flash-attn --no-build-isolation; \
+        pip3 install ninja packaging flash-attn --no-build-isolation; \
     fi
 
 # Установка только нужных для Qwen-TTS зависимостей
 RUN pip3 install transformers==4.57.3 accelerate==1.12.0 diffusers==0.29.0 \
-    soundfile librosa huggingface-hub fastapi uvicorn sentencepiece==0.2.0
+    soundfile librosa huggingface-hub fastapi uvicorn numpy sentencepiece==0.2.0
      
 
 # Установка Qwen3-TTS
@@ -41,7 +40,6 @@ RUN mkdir -p /app/models
 
 # Копирование скриптов для запуска
 COPY start_tts.py /app/
-COPY requirements.txt /app/
 
 ENV MODEL_NAME=Qwen3-TTS-12Hz-1.7B-Base
 ENV MODEL_PATH=/app/models
