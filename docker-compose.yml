@@ -1,18 +1,26 @@
 version: '3.8'
 services:
   qwen-tts:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_FLASH_ATTN: 1  # 1 для включения, 0 для отключения
     container_name: qwen-tts-service
     runtime: nvidia
     ports:
-      - "8000:8000"
+      - "8188:8188"
     volumes:
       - ./models:/app/models  # Веса подключаются отдельно
-      - ./data:/app/data
+      - .//app/data
     environment:
+      - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
-      - MODEL_PATH=/app/models
       - CUDA_VISIBLE_DEVICES=0
+      - MODEL_NAME=Qwen3-TTS-12Hz-1.7B-Base
+      - MODEL_PATH=/app/models
+      - DEVICE=cuda
+      - SAMPLING_RATE=24000
+      - TORCH_CUDA_ARCH_LIST=8.0 8.6 8.9 9.0  # Поддержка различных архитектур GPU
     deploy:
       resources:
         reservations:

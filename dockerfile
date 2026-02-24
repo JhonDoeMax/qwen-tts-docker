@@ -1,30 +1,33 @@
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+# Используем официальный образ PyTorch 2.7.1 с CUDA 12.8
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG INSTALL_FLASH_ATTN=1
-ARG INSTALL_FROM_SOURCE=0
 
 # Установка системных зависимостей
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-dev \
     sox libsox-dev libsox-fmt-all \
+    sox libsox-fmt-mp3 libsox-fmt-ogg \
     ffmpeg libsndfile1-dev \
     git curl wget \
-    build-essential && \
+    build-essential \
+    libgl1-mesa-glx libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# Установка PyTorch с CUDA
-RUN pip3 install --upgrade pip && \
-    pip3 install torch==2.9.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Обновление pip
+RUN pip3 install --upgrade pip setuptools wheel
 
-# Установка Flash Attention 2
+# Установка зависимостей для Flash Attention 2
 RUN if [ "$INSTALL_FLASH_ATTN" = "1" ]; then \
+        pip3 install ninja packaging; \
         pip3 install flash-attn --no-build-isolation; \
     fi
 
-# Установка Qwen-TTS и зависимостей
-RUN pip3 install transformers accelerate diffusers soundfile librosa \
-    gradio huggingface_hub sentencepiece
+# Установка только нужных для Qwen-TTS зависимостей
+RUN pip3 install transformers==4.57.3 accelerate==1.12.0 diffusers==0.29.0 \
+    soundfile librosa huggingface-hub fastapi uvicorn sentencepiece==0.2.0
+     
 
 # Установка Qwen3-TTS
 RUN git clone https://github.com/QwenLM/Qwen3-TTS.git /app/qwen3-tts && \
@@ -40,6 +43,27 @@ RUN mkdir -p /app/models
 COPY start_tts.py /app/
 COPY requirements.txt /app/
 
-EXPOSE 8000
+ENV MODEL_NAME=Qwen3-TTS-12Hz-1.7B-Base
+ENV MODEL_PATH=/app/models
+ENV DEVICE=cuda
+ENV SAMPLING_RATE=24000
+ENV PYTHONUNBUFFERED=1
+
+ENV USE_FLASH_ATTENTION=${INSTALL_FLASH_ATTN}
+
+# Проверка установки
+RUN python3 -c "
+import torch
+print(f'PyTorch: {torch.__version__}')
+print(f'CUDA: {torch.version.cuda}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+try:
+    import flash_attn
+    print(f'Flash Attention: {flash_attn.__version__}')
+except ImportError:
+    print('Flash Attention: not installed')
+"
+
+EXPOSE 8188
 
 CMD ["python3", "start_tts.py"]
