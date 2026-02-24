@@ -8,11 +8,10 @@ ARG INSTALL_FLASH_ATTN=1
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-dev \
     sox libsox-dev libsox-fmt-all \
-    sox libsox-fmt-mp3 libsox-fmt-ogg \
     ffmpeg libsndfile1-dev \
     git curl wget \
     build-essential \
-    libgl1-mesa-glx libglib2.0-0 && \
+    libegl1-mesa libgl1-mesa-glx libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Обновление pip
@@ -48,19 +47,6 @@ ENV SAMPLING_RATE=24000
 ENV PYTHONUNBUFFERED=1
 
 ENV USE_FLASH_ATTENTION=${INSTALL_FLASH_ATTN}
-
-# Проверка установки
-RUN python3 -c "
-import torch
-print(f'PyTorch: {torch.__version__}')
-print(f'CUDA: {torch.version.cuda}')
-print(f'CUDA available: {torch.cuda.is_available()}')
-try:
-    import flash_attn
-    print(f'Flash Attention: {flash_attn.__version__}')
-except ImportError:
-    print('Flash Attention: not installed')
-"
 
 EXPOSE 8188
 
