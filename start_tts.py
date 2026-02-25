@@ -32,11 +32,17 @@ logger.addFilter(RequestContextFilter())
 
 
 # Pydantic models for validation
+class VoiceAttributes(BaseModel):
+    gender: Optional[str] = Field(None, description="Gender of the speaker (male/female/neutral)")
+    age: Optional[int] = Field(None, ge=1, le=120, description="Age of the speaker")
+    emotion: Optional[str] = Field(None, description="Emotion of the speech (happy/sad/angry/neutral/etc)")
+
 class TTSRequest(BaseModel):
     text: Optional[str] = Field(None, description="Text to synthesize")
     tokens: Optional[List[int]] = Field(None, description="Tokens instead of text")
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     max_length: int = Field(1000, ge=1, le=4096, description="Maximum length")
+    voice_attributes: Optional[VoiceAttributes] = Field(None, description="Voice characteristics")
     
     @validator('text', 'tokens')
     def check_text_or_tokens(cls, v, values):
@@ -49,6 +55,7 @@ class TTSFullRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000, description="Текст для озвучки")
     format: str = Field("wav", regex="^(wav|mp3|ogg)$", description="Формат аудио")
     temperature: float = Field(0.7, ge=0.0, le=2.0)
+    voice_attributes: Optional[VoiceAttributes] = Field(None, description="Voice characteristics")
 
 
 # Загрузка конфигурации из переменных окружения
@@ -72,7 +79,7 @@ tokenizer = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Управление жизненным циклом приложения"""
+    """Application lifecycle management"""
     global model, tokenizer
     
     logger.info(f"Loading model from: {model_path}")
@@ -174,7 +181,12 @@ async def list_models():
 @app.post("/stream-tts")
 async def stream_tts(request: Request):
     """
-    Стриминг текста в речь.
+    Стриминг текста в речь с поддержкой параметров голоса.
+    
+    Параметры голоса:
+    - gender: пол говорящего (male/female/neutral)
+    - age: возраст говорящего (1-120)
+    - emotion: эмоция речи (happy/sad/angry/neutral/etc.)
     """
     request_id = str(uuid.uuid4())
     
@@ -198,14 +210,27 @@ async def stream_tts(request: Request):
                         inputs = tokenizer(validated_data.text, return_tensors="pt")
                         input_ids = inputs.input_ids.to(DEVICE)
                     
+                    # Подготовка параметров голоса для генерации
+                    generation_kwargs = {
+                        "input_ids": input_ids,
+                        "max_length": validated_data.max_length,
+                        "do_sample": True,
+                        "temperature": validated_data.temperature
+                    }
+                    
+                    # Добавление параметров голоса, если они предоставлены
+                    if validated_data.voice_attributes:
+                        voice_attrs = validated_data.voice_attributes
+                        if voice_attrs.gender:
+                            generation_kwargs["gender"] = voice_attrs.gender
+                        if voice_attrs.age:
+                            generation_kwargs["age"] = voice_attrs.age
+                        if voice_attrs.emotion:
+                            generation_kwargs["emotion"] = voice_attrs.emotion
+                    
                     # Генерация аудио с автоматическим приведением типов
                     with get_autocast_context(), torch.no_grad():
-                        audio_stream = model.generate_stream(
-                            input_ids=input_ids,
-                            max_length=validated_data.max_length,
-                            do_sample=True,
-                            temperature=validated_data.temperature
-                        )
+                        audio_stream = model.generate_stream(**generation_kwargs)
                     
                     # Стриминг аудио по частям
                     chunk_count = 0
@@ -254,7 +279,12 @@ async def stream_tts(request: Request):
 @app.post("/tts")
 async def tts(request: Request):
     """
-    Полная генерация аудио (не стриминг).
+    Полная генерация аудио (не стриминг) с поддержкой параметров голоса.
+    
+    Параметры голоса:
+    - gender: пол говорящего (male/female/neutral)
+    - age: возраст говорящего (1-120)
+    - emotion: эмоция речи (happy/sad/angry/neutral/etc.)
     """
     request_id = str(uuid.uuid4())
     
@@ -267,14 +297,27 @@ async def tts(request: Request):
             
             inputs = tokenizer(validated_data.text, return_tensors="pt").to(DEVICE)
             
+            # Подготовка параметров голоса для генерации
+            generation_kwargs = {
+                "input_ids": inputs.input_ids,
+                "max_length": 1000,
+                "do_sample": True,
+                "temperature": validated_data.temperature
+            }
+            
+            # Добавление параметров голоса, если они предоставлены
+            if validated_data.voice_attributes:
+                voice_attrs = validated_data.voice_attributes
+                if voice_attrs.gender:
+                    generation_kwargs["gender"] = voice_attrs.gender
+                if voice_attrs.age:
+                    generation_kwargs["age"] = voice_attrs.age
+                if voice_attrs.emotion:
+                    generation_kwargs["emotion"] = voice_attrs.emotion
+            
             # Генерация аудио
             with get_autocast_context(), torch.no_grad():
-                audio = model.generate(
-                    input_ids=inputs.input_ids,
-                    max_length=1000,
-                    do_sample=True,
-                    temperature=validated_data.temperature
-                )
+                audio = model.generate(**generation_kwargs)
             
             # Подготовка аудио
             buffer = prepare_audio_data(audio)
@@ -310,6 +353,15 @@ async def tts(request: Request):
                 status_code=500,
                 content={"error": str(e), "request_id": request_id}
             )
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[{request_id}] Error in tts: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": str(e), "request_id": request_id}
+            )
 
 
 @app.get("/metrics")
@@ -331,6 +383,32 @@ async def metrics():
     
     return metrics_data
 
+
+# Примеры использования API:
+# 
+# 1. Простой запрос с параметрами голоса:
+# POST /stream-tts
+# {
+#     "text": "Привет, мир!",
+#     "voice_attributes": {
+#         "gender": "female",
+#         "age": 25,
+#         "emotion": "happy"
+#     }
+# }
+#
+# 2. Полная генерация с параметрами голоса:
+# POST /tts
+# {
+#     "text": "Привет, мир!",
+#     "format": "wav",
+#     "temperature": 0.7,
+#     "voice_attributes": {
+#         "gender": "male",
+#         "age": 30,
+#         "emotion": "neutral"
+#     }
+# }
 
 if __name__ == "__main__":
     import uvicorn

@@ -17,7 +17,7 @@ services:
       - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
-      - MODEL_NAME=Qwen3-TTS-12Hz-1.7B-Base
+      - MODEL_NAME=Qwen3-TTS-12Hz-1.7B-CustomVoice
       - MODEL_PATH=/app/models
       - DEVICE=cuda
       - SAMPLING_RATE=24000
