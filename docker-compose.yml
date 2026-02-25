@@ -1,10 +1,11 @@
 version: '3.8'
 services:
   qwen-tts:
-    build:
-      context: .
-      args:
-        INSTALL_FLASH_ATTN: 1  # 1 для включения, 0 для отключения
+    image: mosstnslv/qwen-tts-stream-service:latest    
+#    build:
+#      context: .
+#      args:
+#        INSTALL_FLASH_ATTN: 1  # 1 для включения, 0 для отключения
     container_name: qwen-tts-service
     runtime: nvidia
     ports:
