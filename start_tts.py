@@ -6,14 +6,50 @@ import soundfile as sf
 import io
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel, Field, validator
 import asyncio
 import logging
+import uuid
+from contextlib import asynccontextmanager
+from typing import Optional, List
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+# Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Qwen-TTS Streaming Service")
+
+class RequestContextFilter(logging.Filter):
+    """Filter for adding request_id to logs"""
+    def filter(self, record):
+        record.request_id = getattr(record, 'request_id', 'N/A')
+        return True
+
+
+logger.addFilter(RequestContextFilter())
+
+
+# Pydantic models for validation
+class TTSRequest(BaseModel):
+    text: Optional[str] = Field(None, description="Text to synthesize")
+    tokens: Optional[List[int]] = Field(None, description="Tokens instead of text")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    max_length: int = Field(1000, ge=1, le=4096, description="Maximum length")
+    
+    @validator('text', 'tokens')
+    def check_text_or_tokens(cls, v, values):
+        if v is None and values.get('text') is None and values.get('tokens') is None:
+            raise ValueError('Either text or tokens must be provided')
+        return v
+
+
+class TTSFullRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=10000, description="Текст для озвучки")
+    format: str = Field("wav", regex="^(wav|mp3|ogg)$", description="Формат аудио")
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+
 
 # Загрузка конфигурации из переменных окружения
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen3-TTS-12Hz-1.7B-Base")
@@ -21,38 +57,86 @@ MODEL_BASE_PATH = os.getenv("MODEL_PATH", "/app/models")
 DEVICE = os.getenv("DEVICE", "cuda")
 USE_FLASH_ATTENTION = os.getenv("USE_FLASH_ATTENTION", "1") == "1"
 SAMPLING_RATE = int(os.getenv("SAMPLING_RATE", "24000"))
+MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "10000"))
+MAX_CONCURRENT_REQUESTS = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
 
 # Формирование полного пути к модели
 model_path = os.path.join(MODEL_BASE_PATH, MODEL_NAME)
 
-logger.info(f"Loading model from: {model_path}")
-logger.info(f"Device: {DEVICE}")
-logger.info(f"Flash Attention: {USE_FLASH_ATTENTION}")
-logger.info(f"Sampling Rate: {SAMPLING_RATE}")
+# Семафор для ограничения параллельных запросов
+request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-try:
-    # Загрузка модели с весами из внешнего каталога
-    if USE_FLASH_ATTENTION:
-        logger.info("Using Flash Attention 2")
-        model = Qwen3TTSModel.from_pretrained(
-            model_path, 
-            device=DEVICE, 
-            use_flash_attention_2=True,
-            torch_dtype=torch.float16
-        )
+model = None
+tokenizer = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управление жизненным циклом приложения"""
+    global model, tokenizer
+    
+    logger.info(f"Loading model from: {model_path}")
+    logger.info(f"Device: {DEVICE}")
+    logger.info(f"Flash Attention: {USE_FLASH_ATTENTION}")
+    logger.info(f"Sampling Rate: {SAMPLING_RATE}")
+    
+    try:
+        # Загрузка модели с весами из внешнего каталога
+        load_kwargs = {
+            "device": DEVICE,
+            "torch_dtype": torch.float16
+        }
+        
+        if USE_FLASH_ATTENTION:
+            logger.info("Using Flash Attention 2")
+            load_kwargs["use_flash_attention_2"] = True
+        
+        model = Qwen3TTSModel.from_pretrained(model_path, **load_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        logger.info("Model loaded successfully!")
+        
+    except Exception as e:
+        logger.error(f"Failed to load model: {str(e)}")
+        raise
+    
+    yield
+    
+    # Очистка при завершении
+    logger.info("Shutting down, cleaning up resources...")
+    if model is not None:
+        del model
+    if tokenizer is not None:
+        del tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    logger.info("Cleanup complete")
+
+
+app = FastAPI(
+    title="Qwen-TTS Streaming Service",
+    lifespan=lifespan
+)
+
+
+def get_autocast_context():
+    """Контекстный менеджер для автоматического приведения типов"""
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        return torch.cuda.amp.autocast()
+    return torch.no_grad()
+
+
+def prepare_audio_data(audio) -> io.BytesIO:
+    """Подготовка аудио данных для ответа"""
+    if isinstance(audio, torch.Tensor):
+        audio_data = audio.cpu().numpy()
     else:
-        model = Qwen3TTSModel.from_pretrained(
-            model_path, 
-            device=DEVICE,
-            torch_dtype=torch.float16
-        )
+        audio_data = audio
     
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    logger.info("Model loaded successfully!")
-    
-except Exception as e:
-    logger.error(f"Failed to load model: {str(e)}")
-    raise
+    buffer = io.BytesIO()
+    sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
+    buffer.seek(0)
+    return buffer
+
 
 @app.get("/health")
 async def health_check():
@@ -61,8 +145,10 @@ async def health_check():
         "status": "healthy",
         "model": MODEL_NAME,
         "device": DEVICE,
-        "flash_attention": USE_FLASH_ATTENTION
+        "flash_attention": USE_FLASH_ATTENTION,
+        "model_loaded": model is not None
     }
+
 
 @app.get("/models")
 async def list_models():
@@ -81,171 +167,170 @@ async def list_models():
             "model_path": model_path
         }
     except Exception as e:
+        logger.error(f"Error listing models: {str(e)}")
         return {"error": str(e)}
+
 
 @app.post("/stream-tts")
 async def stream_tts(request: Request):
     """
     Стриминг текста в речь.
-    
-    Пример запроса:
-    {
-        "text": "Привет! Это тестовая озвучка.",
-        "tokens": [1, 2, 3],  # Опционально: токены вместо текста
-        "temperature": 0.7,
-        "max_length": 1000
-    }
     """
-    try:
-        data = await request.json()
-        text = data.get("text", "")
-        tokens = data.get("tokens", [])
-        temperature = float(data.get("temperature", 0.7))
-        max_length = int(data.get("max_length", 1000))
-        
-        if not text and not tokens:
-            raise HTTPException(status_code=400, detail="Either 'text' or 'tokens' must be provided")
-        
-        async def generate_audio():
-            try:
-                # Обработка текста или токенов
-                if tokens:
-                    logger.info(f"Processing {len(tokens)} tokens")
-                    input_ids = torch.tensor(tokens).unsqueeze(0).to(DEVICE)
-                else:
-                    logger.info(f"Processing text: {text[:50]}...")
-                    inputs = tokenizer(text, return_tensors="pt")
-                    input_ids = inputs.input_ids.to(DEVICE)
-                
-                # ⚠️ ПРОБЛЕМА: Проверка устройства для autocast
-                if DEVICE == "cuda":
-                    with torch.cuda.amp.autocast():
+    request_id = str(uuid.uuid4())
+    
+    async with request_semaphore:
+        try:
+            data = await request.json()
+            validated_data = TTSRequest(**data)
+            
+            if not validated_data.text and not validated_data.tokens:
+                raise HTTPException(status_code=400, detail="Either 'text' or 'tokens' must be provided")
+            
+            async def generate_audio():
+                try:
+                    # Обработка текста или токенов
+                    if validated_data.tokens:
+                        logger.info(f"[{request_id}] Processing {len(validated_data.tokens)} tokens")
+                        input_ids = torch.tensor(validated_data.tokens).unsqueeze(0).to(DEVICE)
+                    else:
+                        text_preview = validated_data.text[:50] if validated_data.text else ""
+                        logger.info(f"[{request_id}] Processing text: {text_preview}...")
+                        inputs = tokenizer(validated_data.text, return_tensors="pt")
+                        input_ids = inputs.input_ids.to(DEVICE)
+                    
+                    # Генерация аудио с автоматическим приведением типов
+                    with get_autocast_context(), torch.no_grad():
                         audio_stream = model.generate_stream(
                             input_ids=input_ids,
-                            max_length=max_length,
+                            max_length=validated_data.max_length,
                             do_sample=True,
-                            temperature=temperature
+                            temperature=validated_data.temperature
                         )
-                else:
-                    audio_stream = model.generate_stream(
-                        input_ids=input_ids,
-                        max_length=max_length,
-                        do_sample=True,
-                        temperature=temperature
-                    )
                     
-                # Стриминг аудио по частям
-                chunk_count = 0
-                for audio_chunk in audio_stream:
-                    chunk_count += 1
-                    logger.debug(f"Generating audio chunk {chunk_count}")
+                    # Стриминг аудио по частям
+                    chunk_count = 0
+                    for audio_chunk in audio_stream:
+                        chunk_count += 1
+                        logger.debug(f"[{request_id}] Generating audio chunk {chunk_count}")
+                        
+                        # Подготовка аудио данных
+                        if isinstance(audio_chunk, torch.Tensor):
+                            audio_data = audio_chunk.cpu().numpy()
+                        else:
+                            audio_data = audio_chunk
+                        
+                        # Конвертация в WAV формат
+                        buffer = io.BytesIO()
+                        sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
+                        buffer.seek(0)
+                        yield buffer.read()
                     
-                    # ⚠️ ПРОБЛЕМА: Проверка типа данных
-                    if isinstance(audio_chunk, torch.Tensor):
-                        audio_data = audio_chunk.cpu().numpy()
-                    else:
-                        audio_data = audio_chunk
+                    logger.info(f"[{request_id}] Audio generation complete. Total chunks: {chunk_count}")
                     
-                    # Конвертация в WAV формат
-                    buffer = io.BytesIO()
-                    sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
-                    buffer.seek(0)
-                    yield buffer.read()
-                
-                logger.info(f"Audio generation complete. Total chunks: {chunk_count}")
-                
-            except Exception as e:
-                logger.error(f"Error during audio generation: {str(e)}")
-                raise
+                except Exception as e:
+                    logger.error(f"[{request_id}] Error during audio generation: {str(e)}")
+                    # Отправляем ошибку клиенту через специальный формат
+                    error_buffer = io.BytesIO()
+                    error_buffer.write(f"ERROR: {str(e)}".encode())
+                    error_buffer.seek(0)
+                    yield error_buffer.read()
+            
+            return StreamingResponse(
+                generate_audio(), 
+                media_type="audio/wav",
+                headers={"X-Request-ID": request_id}
+            )
         
-        return StreamingResponse(generate_audio(), media_type="audio/wav")
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in stream_tts: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[{request_id}] Error in stream_tts: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": str(e), "request_id": request_id}
+            )
+
 
 @app.post("/tts")
 async def tts(request: Request):
     """
     Полная генерация аудио (не стриминг).
-    
-    Пример запроса:
-    {
-        "text": "Привет! Это тестовая озвучка.",
-        "format": "wav"  # wav, mp3, ogg
-    }
     """
-    try:
-        data = await request.json()
-        text = data.get("text", "")
-        audio_format = data.get("format", "wav")
-        
-        if not text:
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        logger.info(f"Generating full audio for text: {text[:50]}...")
-        
-        inputs = tokenizer(text, return_tensors="pt").to(DEVICE)
-        
-        # ⚠️ ПРОБЛЕМА: Проверка устройства для autocast
-        if DEVICE == "cuda":
-            with torch.cuda.amp.autocast():
-                with torch.no_grad():
-                    audio = model.generate(
-                        input_ids=inputs.input_ids,
-                        max_length=1000,
-                        do_sample=True,
-                        temperature=0.7
-                    )
-        else:
-            with torch.no_grad():
+    request_id = str(uuid.uuid4())
+    
+    async with request_semaphore:
+        try:
+            data = await request.json()
+            validated_data = TTSFullRequest(**data)
+            
+            logger.info(f"[{request_id}] Generating full audio for text: {validated_data.text[:50]}...")
+            
+            inputs = tokenizer(validated_data.text, return_tensors="pt").to(DEVICE)
+            
+            # Генерация аудио
+            with get_autocast_context(), torch.no_grad():
                 audio = model.generate(
                     input_ids=inputs.input_ids,
                     max_length=1000,
                     do_sample=True,
-                    temperature=0.7
+                    temperature=validated_data.temperature
                 )
+            
+            # Подготовка аудио
+            buffer = prepare_audio_data(audio)
+            
+            # Определение media_type
+            if validated_data.format == "wav":
+                media_type = "audio/wav"
+            elif validated_data.format == "mp3":
+                # TODO: Реализовать конвертацию в MP3 через ffmpeg или pydub
+                # Пока возвращаем WAV с предупреждением
+                logger.warning(f"[{request_id}] MP3 format requested but not implemented, returning WAV")
+                media_type = "audio/wav"
+            elif validated_data.format == "ogg":
+                # TODO: Реализовать конвертацию в OGG
+                logger.warning(f"[{request_id}] OGG format requested but not implemented, returning WAV")
+                media_type = "audio/wav"
+            else:
+                media_type = "audio/wav"
+            
+            logger.info(f"[{request_id}] Full audio generation complete")
+            
+            return StreamingResponse(
+                iter([buffer.read()]), 
+                media_type=media_type,
+                headers={"X-Request-ID": request_id}
+            )
         
-        # ⚠️ ПРОБЛЕМА: Проверка типа данных
-        if isinstance(audio, torch.Tensor):
-            audio_data = audio.cpu().numpy()
-        else:
-            audio_data = audio
-        
-        # Конвертация в нужный формат
-        buffer = io.BytesIO()
-        
-        if audio_format == "wav":
-            sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
-            media_type = "audio/wav"
-        elif audio_format == "mp3":
-            # ⚠️ ПРОБЛЕМА: Нужна конвертация в MP3, а не просто сохранение WAV
-            sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
-            media_type = "audio/mpeg"
-            # Для настоящего MP3 нужен дополнительный код:
-            # import subprocess
-            # subprocess.run(['ffmpeg', '-i', '-', '-f', 'mp3', '-'], ...)
-        else:
-            sf.write(buffer, audio_data, samplerate=SAMPLING_RATE, format='WAV')
-            media_type = "audio/wav"
-        
-        buffer.seek(0)
-        
-        logger.info("Full audio generation complete")
-        
-        return StreamingResponse(iter([buffer.read()]), media_type=media_type)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[{request_id}] Error in tts: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": str(e), "request_id": request_id}
+            )
+
+
+@app.get("/metrics")
+async def metrics():
+    """Метрики сервиса"""
+    import psutil
+    import torch
     
-    except Exception as e:
-        logger.error(f"Error in tts: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+    metrics_data = {
+        "cpu_percent": psutil.cpu_percent(),
+        "memory_percent": psutil.virtual_memory().percent,
+        "active_requests": MAX_CONCURRENT_REQUESTS - request_semaphore._value,
+        "max_concurrent_requests": MAX_CONCURRENT_REQUESTS
+    }
+    
+    if torch.cuda.is_available():
+        metrics_data["gpu_memory_allocated"] = torch.cuda.memory_allocated() / 1024**3  # GB
+        metrics_data["gpu_memory_reserved"] = torch.cuda.memory_reserved() / 1024**3  # GB
+    
+    return metrics_data
+
 
 if __name__ == "__main__":
     import uvicorn
