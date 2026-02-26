@@ -38,7 +38,7 @@ async def tts_stream(request: TTSRequest):
             )
         
         # Конвертируем в PCM S16LE
-        audio_np = wav[0].cpu().numpy()
+        audio_np = wav[0]
         pcm = (audio_np * 32767.0).astype(np.int16)
         
         # Потоковая передача чанками
