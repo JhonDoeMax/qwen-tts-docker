@@ -19,29 +19,31 @@ RUN pip3 install --upgrade pip setuptools wheel
 
 # Установка зависимостей для Flash Attention 2
 RUN if [ "$INSTALL_FLASH_ATTN" = "1" ]; then \
-        pip3 install ninja packaging flash-attn --no-build-isolation; \
+        pip3 install --no-cache-dir ninja packaging flash-attn --no-build-isolation; \
     fi
 
 # Установка только нужных для Qwen-TTS зависимостей
-RUN pip3 install transformers==4.57.3 accelerate==1.12.0 diffusers==0.29.0 \
+RUN pip3 install --no-cache-dir transformers==4.57.3 accelerate==1.12.0 diffusers==0.29.0 \
     soundfile torchaudio librosa huggingface-hub fastapi uvicorn numpy sentencepiece==0.2.0
 
 # Установка Qwen3-TTS
 RUN git clone https://github.com/QwenLM/Qwen3-TTS.git /app/qwen3-tts && \
     cd /app/qwen3-tts && \
-    pip3 install -e .
+    pip3 install -e . && \
+    cd /app
 
 WORKDIR /app
+
+# Добавляем путь к qwen3-tts в PYTHONPATH
+ENV PYTHONPATH=/app/qwen3-tts:$PYTHONPATH
 
 # Создание директории для весов (будет монтироваться отдельно)
 RUN mkdir -p /app/models
 
 # Копирование скриптов для запуска
-COPY start_tts.py /app/
+COPY main.py /app/
 
-ENV MODEL_NAME=Qwen3-TTS-12Hz-1.7B-CustomVoice
 ENV MODEL_PATH=/app/models
-ENV DEVICE=cuda
 ENV SAMPLING_RATE=24000
 ENV PYTHONUNBUFFERED=1
 
@@ -49,4 +51,4 @@ ENV USE_FLASH_ATTENTION=${INSTALL_FLASH_ATTN}
 
 EXPOSE 8188
 
-CMD ["python3", "start_tts.py"]
+CMD ["python3", "main.py"]

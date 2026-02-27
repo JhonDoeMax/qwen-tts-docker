@@ -22,7 +22,9 @@ INFERENCE_TIMEOUT = int(os.environ.get("INFERENCE_TIMEOUT", "270"))  # seconds
 STREAM_CHUNK_TOKENS = int(os.environ.get("STREAM_CHUNK_TOKENS", "24"))  # ~2s at 12Hz
 STREAM_LEFT_CONTEXT_TOKENS = int(os.environ.get("STREAM_LEFT_CONTEXT_TOKENS", "25"))
 
-# Audio format mappings
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 CONTENT_TYPE_MAP = {
     "wav": "audio/wav",
     "flac": "audio/flac",
@@ -32,5 +34,5 @@ CONTENT_TYPE_MAP = {
 }
 
 EXT_MAP = {
-    "opus": "ogg",
+    "opus": "ogg",  # opus in ogg container
 }
