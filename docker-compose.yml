@@ -1,16 +1,15 @@
 services:
   qwen-tts:
-    image: mosstnslv/mosstnslv/qwen-tts-service:0.0.1
-#    build:
-#      context: .
-#      args:
-#        INSTALL_FLASH_ATTN: 1  # 1 для включения, 0 для отключения
+    build:
+      context: .
+      args:
+        INSTALL_FLASH_ATTN: 1
     container_name: qwen-tts-service
     runtime: nvidia
     ports:
       - "8188:8188"
     volumes:
-      - ./models:/app/models  # Веса подключаются отдельно
+      - ./models:/app/models
     environment:
       - PYTHONUNBUFFERED=1
       - QWEN3_TTS_ATTN_IMPLEMENTATION=flash_attention_2
@@ -18,7 +17,7 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - MODEL_PATH=/app/models
       - SAMPLING_RATE=24000
-      - TORCH_CUDA_ARCH_LIST=8.0 8.6 8.9 9.0  # Поддержка различных архитектур GPU
+      - TORCH_CUDA_ARCH_LIST=8.0 8.6 8.9 9.0 
     deploy:
       resources:
         reservations:
