@@ -1,204 +1,195 @@
-# Qwen3-TTS Streaming Server
+# Qwen3-TTS Service
 
-A high-performance, Uvicorn-ready TTS server using the **Qwen3-TTS** model with native PyTorch support for **streaming PCM audio output**. This implementation leverages Hugging Face Transformers and `torchaudio` to provide low-latency text-to-speech synthesis with incremental waveform decoding.
-
-This service supports three task types:
-- **CustomVoice**: Predefined speaker voices
-- **VoiceDesign**: Voice control via natural language instructions
-- **Base (Voice Clone)**: Custom voice cloning from reference audio
-
-Streaming mode enables real-time audio generation by sending PCM chunks as they are synthesized, making it suitable for interactive applications.
-
----
+A high-performance Text-to-Speech (TTS) service based on the **Qwen3-TTS** model. This service supports streaming audio generation, voice cloning, custom voices, and voice design tasks. It is optimized for NVIDIA GPUs using CUDA and Flash Attention 2.
 
 ## Features
 
-- ✅ **Streaming PCM Output** – Incremental audio delivery via base64-encoded PCM (`pcm_s16le`)
-- 🚀 **Native HF Integration** – Uses standard Hugging Face/PyTorch stack (no external binaries)
-- 🔁 **Left-Context Decoding** – Ensures continuity in streamed audio using context overlap
-- 📦 **Multiple Audio Formats** – Final output supports `opus`, `wav`, `flac`, `ogg`, `mp3`
-- 🌐 **Uvicorn + FastAPI** – Ready for production deployment with async streaming
-- ⏱️ **Timeout Protection** – Prevents hanging inference jobs
-- 🔊 **12Hz Speech Tokenizer** – High-fidelity autoregressive TTS at ~2000 samples per token (24kHz)
+- **Streaming Support**: Incremental audio generation with low latency (PCM/Opus).
+- **Multiple Task Types**:
+  - **CustomVoice**: Predefined speakers with optional instructions.
+  - **VoiceDesign**: Generate voices based on text instructions.
+  - **Base (Voice Clone)**: Clone voices from reference audio.
+- **GPU Acceleration**: Built on PyTorch with CUDA 12.8 and Flash Attention 2 support.
+- **Flexible Output**: Supports WAV, FLAC, OGG, Opus, and MP3 formats.
+- **Dockerized**: Easy deployment using Docker Compose with NVIDIA runtime.
 
----
+## Prerequisites
 
-## Deployment
+- **Docker** & **Docker Compose**
+- **NVIDIA GPU** with compatible drivers
+- **NVIDIA Container Toolkit** installed on the host machine
+- **Model Weights**: You must download the Qwen3-TTS model weights separately and mount them to the container.
+
+## Quick Start
+
+### 1. Clone and Prepare
+
+Ensure you have the model weights downloaded. The service expects models in the `/app/models` directory inside the container.
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8188 --workers 1
+# Create a directory for models
+mkdir -p ./models
+
+# Place your Qwen3-TTS model weights here (e.g., Qwen3-TTS-12Hz-1.7B-Base)
+# Example structure: ./models/Qwen3-TTS-12Hz-1.7B-Base
 ```
 
-> ⚠️ Only one worker should be used due to GPU memory constraints.
+### 2. Build and Run
 
-Ensure required packages are installed:
+Use Docker Compose to build and start the service.
 
 ```bash
-pip install torch torchaudio transformers soundfile numpy uvicorn fastapi base64
+docker-compose up --build
 ```
 
-Optional (for Opus encoding):
-```bash
-apt-get install ffmpeg  # or install via conda/brew
-```
+The service will be available at `http://localhost:8188`.
 
-Set environment variables if needed:
+## Configuration
+
+You can configure the service using Environment Variables in `docker-compose.yml` or build arguments.
+
+### Build Arguments (`docker-compose.yml`)
+
+| Argument | Default | Description |
+| :--- | :--- | :--- |
+| `INSTALL_FLASH_ATTN` | `1` | Set to `1` to enable Flash Attention 2, `0` to disable. |
+
+### Environment Variables
 
 | Variable | Default | Description |
-|--------|--------|-----------|
-| `MODEL_PATH` | `"Qwen"` | Base path where models are stored |
-| `QWEN3_TTS_TASK_TYPE` | `"CustomVoice"` | Task type: `CustomVoice`, `VoiceDesign`, or `Base` |
-| `QWEN3_TTS_ATTN_IMPLEMENTATION` | *(auto)* | Attention backend: `flash_attention_2`, `sdpa`, `eager` |
-| `INFERENCE_TIMEOUT` | `270` | Max seconds for inference before timeout |
-| `STREAM_CHUNK_TOKENS` | `24` | Number of codec tokens per stream chunk (~2 sec) |
-| `STREAM_LEFT_CONTEXT_TOKENS` | `25` | Left context tokens to maintain audio coherence |
+| :--- | :--- | :--- |
+| `MODEL_PATH` | `/app/models` | Path inside the container where models are stored. |
+| `QWEN3_TTS_TASK_TYPE` | `CustomVoice` | Default task type (`CustomVoice`, `VoiceDesign`, `Base`). |
+| `QWEN3_TTS_MODEL` | *Auto* | Specific model path override. |
+| `QWEN3_TTS_ATTN_IMPLEMENTATION` | `flash_attention_2` | Attention implementation (`flash_attention_2`, `sdpa`, `eager`). |
+| `CUDA_VISIBLE_DEVICES` | `0` | GPU ID to use. |
+| `SAMPLING_RATE` | `24000` | Audio sampling rate. |
+| `INFERENCE_TIMEOUT` | `270` | Timeout for inference in seconds. |
+| `STREAM_CHUNK_TOKENS` | `24` | Number of tokens per streaming chunk. |
+| `STREAM_LEFT_CONTEXT_TOKENS` | `25` | Left context tokens for streaming decoding. |
+| `TORCH_CUDA_ARCH_LIST` | `8.0 8.6...` | CUDA architectures to support. |
 
-Model paths expected under `MODEL_PATH/`:
-- `Qwen3-TTS-1.7B-CustomVoice`
-- `Qwen3-TTS-1.7B-VoiceDesign`
-- `Qwen3-TTS-1.7B-Base`
+## API Reference
 
----
+### Endpoint
 
-## API Endpoint
-
-POST `/tts/generate`
-
-Accepts JSON input with support for both **streaming** and **non-streaming** modes.
+- **URL**: `/tts/generate`
+- **Method**: `POST`
+- **Content-Type**: `application/json`
 
 ### Request Parameters
 
-| Field | Type | Required | Default | Description |
-|------|------|---------|--------|------------|
-| `text` | string | ✅ Yes | — | The text to synthesize into speech |
-| `stream` | boolean | No | `false` | Enable streaming mode (yields partial audio) |
-| `task_type` | string | No | `"CustomVoice"` | One of: `CustomVoice`, `VoiceDesign`, `Base` |
-| `language` | string | No | `"Auto"` | Input language (e.g., `"Spanish"`, `"zh"`) |
-| `output_format` | string | No | `"opus"` | Output format: `wav`, `flac`, `ogg`, `opus`, `mp3` |
-| `speaker` | string | Conditional | `"Vivian"` | Speaker name (used in `CustomVoice`) |
-| `instruct` | string | Conditional | `""` | Instruction for voice style (used in `VoiceDesign`) |
-| `ref_audio` | bytes (base64) | Conditional | — | Reference audio for voice cloning (`Base`) |
-| `ref_text` | string | No | `""` | Transcript of reference audio |
-| `x_vector_only_mode` | bool | No | `false` | Use only speaker embedding, not content (voice clone) |
-| `do_sample` | bool | No | `true` | Whether to sample during generation |
-| `top_k` | int | No | `50` | Top-k filtering |
-| `top_p` | float | No | `1.0` | Nucleus sampling threshold |
-| `temperature` | float | No | `0.9` | Sampling temperature |
-| `repetition_penalty` | float | No | `1.05` | Repetition penalty |
-| `max_new_tokens` | int | No | `2048` | Maximum generated tokens |
-| `seed` | int | No | `None` | Random seed for reproducibility |
-| `subtalker_*` | various | No | — | Advanced sampling params for sub-talkers |
-| `stream_chunk_tokens` | int | No | env: `24` | Tokens per audio chunk in streaming |
-| `stream_left_context_tokens` | int | No | env: `25` | Context size for smooth decoding |
-| `timestamps` | bool | No | `false` | Return word timestamps (if supported) |
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `text` | string | **Yes** | - | The text to synthesize. |
+| `stream` | boolean | No | `false` | Enable streaming response (NDJSON). |
+| `task_type` | string | No | `CustomVoice` | `CustomVoice`, `VoiceDesign`, or `Base`. |
+| `language` | string | No | `Auto` | Language code (e.g., `chinese`, `english`, `auto`). |
+| `output_format` | string | No | `opus` | Audio format: `wav`, `flac`, `ogg`, `opus`, `mp3`. |
+| `speaker` | string | No | `Vivian` | Speaker name (Required for `CustomVoice`). |
+| `instruct` | string | No | `""` | Instruction text (Required for `VoiceDesign`, optional for `CustomVoice`). |
+| `ref_audio` | string | **Yes*** | - | Reference audio for voice cloning (Required for `Base` task). |
+| `ref_text` | string | No | `""` | Text content of the reference audio (for `Base` task). |
+| `x_vector_only_mode` | boolean | No | `false` | Use only x-vector for cloning (for `Base` task). |
+| `do_sample` | boolean | No | `true` | Enable sampling during generation. |
+| `top_k` | int | No | `50` | Top-K sampling parameter. |
+| `top_p` | float | No | `1.0` | Top-P (nucleus) sampling parameter. |
+| `temperature` | float | No | `0.9` | Sampling temperature. |
+| `repetition_penalty` | float | No | `1.05` | Penalty for token repetition. |
+| `max_new_tokens` | int | No | `2048` | Maximum number of tokens to generate. |
+| `seed` | int | No | `null` | Random seed for reproducibility. |
+| `timestamps` | boolean | No | `false` | Return word timestamps (Non-streaming only). |
+| `stream_chunk_tokens` | int | No | `24` | Tokens per chunk in streaming mode. |
+| `stream_left_context_tokens`| int | No | `25` | Left context tokens for streaming decoding. |
+| `subtalker_dosample` | boolean | No | `true` | Enable sampling for subtalker. |
+| `subtalker_top_k` | int | No | `50` | Top-K for subtalker. |
+| `subtalker_top_p` | float | No | `1.0` | Top-P for subtalker. |
+| `subtalker_temperature` | float | No | `0.9` | Temperature for subtalker. |
 
-> 💡 For `VoiceDesign`, `instruct` is required.  
-> For `Base` (voice clone), `ref_audio` is required.
+*\*Required depending on `task_type`.*
 
----
+### Response Format
 
-## Response Format
+#### Non-Streaming (`stream: false`)
+Returns a single JSON object upon completion.
 
-### Non-Streaming Mode
-Returns a single JSON object:
 ```json
 {
-  "audio_data": "base64...",
+  "audio_data": "<base64_encoded_audio>",
   "sample_rate": 24000,
   "format": "opus",
-  "duration_seconds": 5.23,
-  "words": [ { "word": "hello", "start": 0.1, "end": 0.6 }, ... ]
+  "duration_seconds": 3.52,
+  "words": [...] // Optional if timestamps=true
 }
 ```
 
-If `timestamps=true`, forced alignment results may be included.
+#### Streaming (`stream: true`)
+Returns `application/x-ndjson` (Newline-delimited JSON). Each line is a JSON object.
 
-### Streaming Mode
-Streams newline-delimited JSON (`application/x-ndjson`) chunks:
-
-#### Audio Chunks
+**Chunk Example:**
 ```json
-{
-  "chunk_index": 0,
-  "audio_format": "pcm_s16le",
-  "sample_rate": 24000,
-  "num_samples": 48000,
-  "audio_base64": "pcm_data_here",
-  "done": false
-}
+{"chunk_index": 0, "audio_format": "pcm_s16le", "sample_rate": 24000, "num_samples": 4800, "audio_base64": "...", "done": false}
 ```
 
-#### Final Chunk
+**Final Chunk Example:**
 ```json
-{
-  "chunk_index": 5,
-  "duration_seconds": 10.45,
-  "done": true
-}
+{"chunk_index": 1, "duration_seconds": 3.52, "done": true}
 ```
 
-Each `audio_base64` contains raw signed 16-bit little-endian PCM data. Clients must decode and play incrementally.
-
----
-
-## Example Requests
-
-### 1. Basic Synthesis (Non-Streaming)
+**Error Example:**
 ```json
-{
-  "text": "Hello, how are you today?",
-  "speaker": "Diego",
-  "language": "en"
-}
+{"error": "Error message", "done": true}
 ```
 
-### 2. Streaming with Custom Voice
-```json
-{
-  "text": "Bienvenidos al sistema de voz en tiempo real.",
-  "stream": true,
-  "speaker": "Luna",
-  "language": "es",
-  "temperature": 0.85
-}
+## Usage Examples
+
+### 1. Custom Voice (Non-Streaming)
+
+```bash
+curl -X POST http://localhost:8188/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hello, this is a test of the Qwen3 TTS service.",
+    "task_type": "CustomVoice",
+    "speaker": "Vivian",
+    "stream": false,
+    "output_format": "wav"
+  }'
 ```
 
-### 3. Voice Design via Instruction
-```json
-{
-  "task_type": "VoiceDesign",
-  "text": "I'm excited to show you this new feature!",
-  "instruct": "a young female voice, cheerful and energetic",
-  "language": "en"
-}
+### 2. Voice Cloning (Base Task)
+
+```bash
+curl -X POST http://localhost:8188/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Cloning this voice successfully.",
+    "task_type": "Base",
+    "ref_audio": "<base64_encoded_reference_audio>",
+    "ref_text": "Text spoken in the reference audio.",
+    "stream": false
+  }'
 ```
 
-### 4. Voice Cloning (Base Model)
-```json
-{
-  "task_type": "Base",
-  "text": "This is my synthesized voice.",
-  "ref_audio": "base64_encoded_wav_data",
-  "ref_text": "This is my real voice.",
-  "x_vector_only_mode": false
-}
+### 3. Streaming Generation
+
+```bash
+curl -X POST http://localhost:8188/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Streaming audio test.",
+    "stream": true,
+    "output_format": "pcm_s16le"
+  }'
 ```
 
----
+## Troubleshooting
 
-## Performance Notes
-
-- **Latency**: Streaming begins within ~2 seconds (configurable via `STREAM_CHUNK_TOKENS`)
-- **Memory**: Model loads fully into GPU VRAM; ensure sufficient memory (~10–15 GB for bfloat16)
-- **Audio Quality**: 24kHz output with high fidelity via 12Hz residual vector quantization decoder
-- **Throughput**: Optimized for single concurrent request; use load balancing for scale
-
----
+- **GPU Errors**: Ensure the NVIDIA Container Toolkit is installed and `nvidia-smi` works on the host. Check `CUDA_VISIBLE_DEVICES` in `docker-compose.yml`.
+- **Model Not Found**: Verify that the model weights are correctly mounted to `/app/models` inside the container.
+- **Flash Attention**: If you encounter errors related to Flash Attention, set `INSTALL_FLASH_ATTN=0` in build args and `QWEN3_TTS_ATTN_IMPLEMENTATION=sdpa` in environment variables.
+- **Timeouts**: Increase `INFERENCE_TIMEOUT` in environment variables for long text inputs.
 
 ## License
 
-Refer to the original [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) repository for licensing details.
-
---- 
-
-> Developed for seamless integration into real-time voice systems, IVR platforms, and AI agents requiring natural, expressive speech synthesis with minimal latency.
+This service wrapper is provided as-is. Please refer to the original Qwen3-TTS repository for model licensing terms.
