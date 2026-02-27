@@ -6,6 +6,12 @@ Streaming mode:
   - Streams PCM chunks (base64) to the client
 """
 
+import os
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import sys
+sys.path.insert(0, "/app/lib")
+
 import base64
 import io
 import subprocess
@@ -42,16 +48,34 @@ if _torch_version_tuple() < (2, 10, 0):
 # Model configuration
 # ---------------------------------------------------------------------------
 
+MODEL_MAP = {
+    "CustomVoice": "/app/models/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "VoiceDesign": "Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "Base": "Qwen3-TTS-12Hz-1.7B-Base",
+}
 
+TASK_TYPE = os.environ.get("QWEN3_TTS_TASK_TYPE", "CustomVoice")
+MODEL_NAME = os.environ.get("QWEN3_TTS_MODEL", MODEL_MAP.get(TASK_TYPE, MODEL_MAP["CustomVoice"]))
 
+INFERENCE_TIMEOUT = int(os.environ.get("INFERENCE_TIMEOUT", "270"))  # seconds
+STREAM_CHUNK_TOKENS = int(os.environ.get("STREAM_CHUNK_TOKENS", "24"))  # ~2s at 12Hz
+STREAM_LEFT_CONTEXT_TOKENS = int(os.environ.get("STREAM_LEFT_CONTEXT_TOKENS", "25"))
 
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
+CONTENT_TYPE_MAP = {
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg; codecs=opus",
+    "mp3": "audio/mpeg",
+}
 
-
-
-
-
-
+EXT_MAP = {
+    "opus": "ogg",  # opus in ogg container
+}
 
 
 def encode_audio(audio_np: np.ndarray, sample_rate: int, audio_format: str = "opus") -> bytes:
@@ -371,7 +395,7 @@ def _get_native_model():
 
     attn_impl = os.environ.get("QWEN3_TTS_ATTN_IMPLEMENTATION")  # e.g. "flash_attention_2" | "sdpa" | "eager"
 
-    print(f"Loading native model: {MODEL_PATH} (task_type={TASK_TYPE}, device={device_map})")
+    print(f"Loading native model: {MODEL_NAME} (task_type={TASK_TYPE}, device={device_map})")
     load_kwargs = dict(
         device_map=device_map,
         dtype=torch_dtype,
@@ -379,7 +403,7 @@ def _get_native_model():
     if attn_impl:
         load_kwargs["attn_implementation"] = attn_impl
 
-    _native = Qwen3TTSModel.from_pretrained(MODEL_PATH, **load_kwargs)
+    _native = Qwen3TTSModel.from_pretrained(MODEL_NAME, **load_kwargs)
     _native.model.eval()
     print("Native model loaded successfully.")
     return _native

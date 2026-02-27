@@ -44,11 +44,11 @@ if _torch_version_tuple() < (2, 10, 0):
 # ---------------------------------------------------------------------------
 # Model configuration
 # ---------------------------------------------------------------------------
-TASK_TYPE = os.environ.get("MODEL_PATH", "Qwen")
+MODEL_PATH = os.environ.get("MODEL_PATH", "Qwen")
 MODEL_MAP = {
     "CustomVoice": f"{MODEL_PATH}/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "VoiceDesign": f"{MODEL_PATH}Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-    "Base": f"{MODEL_PATH}Qwen3-TTS-12Hz-1.7B-Base",
+    "VoiceDesign": f"{MODEL_PATH}/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "Base": f"{MODEL_PATH}/Qwen3-TTS-12Hz-1.7B-Base",
 }
 
 TASK_TYPE = os.environ.get("QWEN3_TTS_TASK_TYPE", "CustomVoice")
@@ -392,7 +392,7 @@ def _get_native_model():
 
     attn_impl = os.environ.get("QWEN3_TTS_ATTN_IMPLEMENTATION")  # e.g. "flash_attention_2" | "sdpa" | "eager"
 
-    print(f"Loading native model: {MODEL_PATH} (task_type={TASK_TYPE}, device={device_map})")
+    print(f"Loading native model: {MODEL_NAME} (task_type={TASK_TYPE}, device={device_map}), flash_attention_2={attn_impl}")
     load_kwargs = dict(
         device_map=device_map,
         dtype=torch_dtype,
@@ -400,7 +400,7 @@ def _get_native_model():
     if attn_impl:
         load_kwargs["attn_implementation"] = attn_impl
 
-    _native = Qwen3TTSModel.from_pretrained(MODEL_PATH, **load_kwargs)
+    _native = Qwen3TTSModel.from_pretrained(MODEL_NAME, **load_kwargs)
     _native.model.eval()
     print("Native model loaded successfully.")
     return _native
@@ -816,7 +816,7 @@ executor = ThreadPoolExecutor(max_workers=1)
 
 app = FastAPI()
 
-@app.post("/generate")
+@app.post("/tts/generate")
 async def generate_tts_endpoint(request: Request):
     params = await request.json()
     stream_requested = params.get("stream", False)
@@ -873,4 +873,4 @@ async def generate_tts_endpoint(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8188, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8188, log_level="debug")

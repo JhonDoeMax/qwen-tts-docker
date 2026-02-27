@@ -101,7 +101,7 @@ def _sample_next_token(
     top_p: float,
     repetition_penalty: float,
     generated_token_ids: list[int],
-    suppress_token_ids: torch.Tensor | None,
+    suppress_token_ids: Optional[torch.Tensor],
 ) -> int:
     logits = logits.to(torch.float32)
 

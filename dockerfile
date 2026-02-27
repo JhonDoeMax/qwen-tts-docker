@@ -34,9 +34,6 @@ RUN git clone https://github.com/QwenLM/Qwen3-TTS.git /app/qwen3-tts && \
 
 WORKDIR /app
 
-# Добавляем путь к qwen3-tts в PYTHONPATH
-ENV PYTHONPATH=/app/qwen3-tts:$PYTHONPATH
-
 # Создание директории для весов (будет монтироваться отдельно)
 RUN mkdir -p /app/models
 

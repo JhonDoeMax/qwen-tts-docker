@@ -25,6 +25,7 @@ def _get_native_model():
             )
         except Exception:
             pass
+        # Best-effort SDPA backend preference (does not affect FlashAttention2).
         try:
             torch.backends.cuda.enable_flash_sdp(True)
             torch.backends.cuda.enable_mem_efficient_sdp(True)
@@ -33,8 +34,11 @@ def _get_native_model():
 
     attn_impl = os.environ.get("QWEN3_TTS_ATTN_IMPLEMENTATION")
 
-    print(f"Loading native model: {MODEL_NAME} (device={device_map})")
-    load_kwargs = dict(device_map=device_map, dtype=torch_dtype)
+    print(f"Loading native model: {MODEL_NAME} (task_type={TASK_TYPE}, device={device_map})")
+    load_kwargs = dict(
+        device_map=device_map,
+        dtype=torch_dtype,
+    )
     if attn_impl:
         load_kwargs["attn_implementation"] = attn_impl
 

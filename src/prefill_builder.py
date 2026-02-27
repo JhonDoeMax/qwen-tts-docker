@@ -1,4 +1,3 @@
-# prefill_builder.py
 from typing import Optional
 import torch
 
@@ -14,9 +13,12 @@ def _build_prefill(
     speaker: Optional[str],
     non_streaming_mode: bool,
 ):
+    """Create Talker prefill embeddings/masks for a single sample, following upstream generate()."""
     talker = qwen_model.talker
 
     pieces = []
+
+    # Speaker embedding (CustomVoice / VoiceClone)
     voice_clone_spk_embeds = None
     if voice_clone_prompt is not None:
         voice_clone_spk_embeds = qwen_model.generate_speaker_prompt(voice_clone_prompt)
@@ -40,6 +42,7 @@ def _build_prefill(
         else:
             speaker_embed = None
 
+    # Language token id / dialect handling
     language_id = None
     if language is None:
         raise ValueError("language must be provided")
@@ -107,6 +110,7 @@ def _build_prefill(
 
     talker_input_embed = torch.cat((role_embed, prefill_embed), dim=1)
 
+    # ICL prompt for Base (voice clone)
     if (
         voice_clone_prompt is not None
         and voice_clone_prompt.get("ref_code", None) is not None
@@ -114,7 +118,7 @@ def _build_prefill(
         and bool(voice_clone_prompt["icl_mode"][0])
     ):
         if ref_id is None:
-            raise ValueError("ref_text/ref_id is required for Base task in ICL mode")
+            raise ValueError("ref_text/ref_id is required for Base task in ICL mode (x_vector_only_mode=False)")
         icl_input_embed, trailing_text_hidden = qwen_model.generate_icl_prompt(
             text_id=input_id[:, 3:-5],
             ref_id=ref_id[:, 3:-2],
@@ -125,6 +129,7 @@ def _build_prefill(
         )
         talker_input_embed = torch.cat([talker_input_embed, icl_input_embed], dim=1)
     else:
+        # First text token
         talker_input_embed = torch.cat(
             [
                 talker_input_embed,
